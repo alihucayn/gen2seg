@@ -5,10 +5,9 @@
 ### [Project Page](https://reachomk.github.io/gen2seg) | [Paper](https://arxiv.org/abs/...)
 
 
-[gen2seg: Generative Models Enable Generalizable Instance Segmentation](https://reachomk.github.io/gen2seg)  
+[**gen2seg: Generative Models Enable Generalizable Instance Segmentation**](https://reachomk.github.io/gen2seg)  
  [Om Khangaonkar](https://reachomk.github.io),
- [Hamed Pirsiavash](https://web.cs.ucdavis.edu/~hpirsiav/)
-
+ [Hamed Pirsiavash](https://web.cs.ucdavis.edu/~hpirsiav/)<br>
  UC Davis <br>
 <img src='assets/teaser.png'/>
 
