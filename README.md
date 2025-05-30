@@ -1,9 +1,7 @@
 # gen2seg: Generative Models Enable Generalizable Instance Segmentation
 [![Hugging Face Spaces](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Spaces-blue)](https://huggingface.co/spaces/reachomk/gen2seg)
 
-
 ### [Project Page](https://reachomk.github.io/gen2seg) | [Paper](https://arxiv.org/abs/2505.15263)
-
 
 [**gen2seg: Generative Models Enable Generalizable Instance Segmentation**](https://reachomk.github.io/gen2seg)  
  [Om Khangaonkar](https://reachomk.github.io),
@@ -51,3 +49,11 @@ I will release all training code by June 7 (likely earlier). Make sure to star a
 
 ##  Citation
 Please cite our paper if it was helpful or you liked it. 
+```
+@article{khangaonkar2025gen2seg,
+      title={gen2seg: Generative Models Enable Generalizable Instance Segmentation}, 
+      author={Om Khangaonkar and Hamed Pirsiavash},
+      year={2025},
+      journal={arXiv preprint arXiv:2505.15263}
+}
+```
