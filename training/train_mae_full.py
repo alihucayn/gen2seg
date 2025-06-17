@@ -232,14 +232,11 @@ def main():
             args_dict = vars(args)
             f.write("\n".join(f"{k}: {v}" for k, v in args_dict.items()))
 
-    if args.noise_type is None:
-        logger.warning("Noise type is None. This setting is only meant for checkpoints without image conditioning.")
-
     # -------------------------------
     # Model: Load ViTMAEForPreTraining and set mask_ratio to 0.
     # -------------------------------
     logger.info("Loading ViTMAEForPreTraining model")
-    image_size = 448  # e.g., 224
+    image_size = 224  # e.g., 224
 
     config = AutoConfig.from_pretrained(args.pretrained_model_name_or_path, revision=args.revision, image_size=image_size)
 
