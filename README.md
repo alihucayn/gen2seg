@@ -44,7 +44,9 @@ Threshold and sigma allow you to control the mask threshold and the amount of av
 
 We have also provided our inference script for SAM, to enable qualitative comparison. Please make sure you download the checkpoint and input the path in the script. You should also edit the `image_path` variable (for your input image). 
 
-## Training
+## Training our models
+You will probably need a 48 GB GPU to train our SD model, but MAE will work on 24GB.   
+
 ### Data
 We use two datasets, Hypersim and Virtual Kitti 2.
 
