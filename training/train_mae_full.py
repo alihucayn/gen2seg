@@ -271,8 +271,8 @@ def main():
     # -------------------------------
     # Setup Datasets and Dataloaders
     # -------------------------------
-    vkitti_root_dir = "/nfs_share3/om/vkitti2"
-    hypersim_root_dir = "/nfs_share3/om/hypersim"
+    vkitti_root_dir = "UPDATE THIS"
+    hypersim_root_dir = "UPDATE THIS"
     train_dataset_hypersim = Hypersim(root_dir=hypersim_root_dir, transform=True, height=224, width=224)
     train_dataset_vkitti = VirtualKITTI2(root_dir=vkitti_root_dir,res=(224, 224), transform=True)
 

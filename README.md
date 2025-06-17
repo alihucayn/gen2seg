@@ -45,8 +45,6 @@ Threshold and sigma allow you to control the mask threshold and the amount of av
 We have also provided our inference script for SAM, to enable qualitative comparison. Please make sure you download the checkpoint and input the path in the script. You should also edit the `image_path` variable (for your input image). 
 
 ## Training
-I wrote the directions below for Stable Diffusion finetuning, but they apply to the MAE script as well (excluding specific line numbers, of course).
-
 ### Data
 We use two datasets, Hypersim and Virtual Kitti 2.
 
@@ -58,7 +56,7 @@ For Hypersim, I recommend downloading using this script: https://github.com/appl
 
 Assuming you have a root folder `root`, you should download the RGB frames (`scene_cam_00_final_preview/*.color.jpg`) into `root/rgb`. You also will need to download the segmentation annotations (`scene_cam_03_geometry_hdf5/*..semantic_instance.hdf5`). You will to convert these RGB annotations by assigning the background as black and each mask a unique color (that is not black or white). Please delete all frames that do not have any annotations. If you keep these it will degrade performance. I also found deleting scenes with less than 10 annotated objects helped.  Please place the colored annotations into `root/instance-rgb`. 
 
-You will need to specify the path to each dataset at line 360 in `training/train.py`.  
+You will need to specify the path to each dataset at line 360 in `training/train.py`, or line 274 in `training/train_mae_full.py`.  
 
 ### Training
 Before beginning, please modify the `num_processes` variable in `training/scripts/multi_gpu.yaml` with the number of GPUs you want to parallelize over. 
