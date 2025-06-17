@@ -1,4 +1,8 @@
-import os
+# gen2seg official inference pipeline code for Stable Diffusion model
+# 
+# Please see our project website at https://reachomk.github.io/gen2seg
+#
+# Additionally, if you use our code please cite our paper. 
 import argparse
 import numpy as np
 import cv2

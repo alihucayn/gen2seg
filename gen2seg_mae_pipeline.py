@@ -2,7 +2,7 @@
 # 
 # Please see our project website at https://reachomk.github.io/gen2seg
 #
-# Additionally, if you use our code please cite our paper, along with the two works above. 
+# Additionally, if you use our code please cite our paper. 
 
 from dataclasses import dataclass
 from typing import Union, List, Optional
