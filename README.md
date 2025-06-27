@@ -18,9 +18,13 @@ If you want any of our other models, send me an email. If there is sufficient de
 
 ## Getting Started
 Please set up the environment by running
-```conda env create -f environment.yml```
+```
+conda env create -f environment.yml
+```
 and then
-```conda activate gen2seg```
+```
+conda activate gen2seg
+```
 ##  Inference
 Currently, we have released inference code for our SD and MAE models. You can run them by editing the `image_path` variable (for your input image) in each file, and then simply running it with `python inference_{mae or sd}.py`.  
 
