@@ -1,0 +1,31 @@
+name: gen2seg
+channels:
+  - pytorch
+  - conda-forge
+  - xformers
+dependencies:
+  - python=3.9
+  - pytorch=2.2.0
+  - torchvision=0.17.0
+  - torchaudio
+  - accelerate=0.27.2
+  - numpy=1.26.4
+  - tokenizers=0.15.2
+  - transformers=4.37.2
+  - xformers=0.0.24
+  - h5py
+  - opencv-python
+  - matplotlib
+  - scipy
+  - setuptools
+  - omegaconf
+  - tabulate
+  - pandas
+  - wandb
+  - datasets
+  - pip
+  - pip:
+    - diffusers==0.30.2
+    - peft<0.14
+    - segment-anything==1.0
+    - opencv-contrib-python

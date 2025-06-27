@@ -16,12 +16,17 @@ ImageNet-1K-pretrained Masked Autoencoder-Huge (MAE-H):  https://huggingface.co/
 
 If you want any of our other models, send me an email. If there is sufficient demand, I will also release them publicly. 
 
+## Getting Started
+Please set up the environment by running
+```conda env create -f environment.yml```
+and then
+```conda activate gen2seg```
 ##  Inference
 Currently, we have released inference code for our SD and MAE models. You can run them by editing the `image_path` variable (for your input image) in each file, and then simply running it with `python inference_{mae or sd}.py`.  
 
 You will need to have `transformers` and `diffusers` installed, along with standard machine learning packages such as `pytorch` and `numpy`.  More details on our specific environment will be released with the training code. 
 
-We have also released code for prompting. Please run `pip install opencv-contrib-python` prior to running this file. 
+We have also released code for prompting. Please run `pip install opencv-contrib-python` prior to running this file if you didn't start from our conda environment. 
 
 Here is how you run it:
 ```
