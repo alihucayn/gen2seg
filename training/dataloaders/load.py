@@ -175,17 +175,15 @@ class SynchronizedTransform_Hyper:
             cropped_instance = TF.crop(instance_mask, top, left, crop_height, crop_width)
         return cropped_image, cropped_instance
 
-    def __call__(self, rgb_image, seg_image, inst_image):
+    def __call__(self, rgb_image, inst_image):
         # h-flip
         if random.random() > 0.5:
             rgb_image = self.horizontal_flip(rgb_image)
-            seg_image = self.horizontal_flip(seg_image)
             inst_image = self.horizontal_flip(inst_image)
         rgb_image   = self.resize(rgb_image)
-        seg_image = self.resize_nn(seg_image)
         inst_image = self.resize_nn(inst_image)
         if self.crop != None:
-            rgb_image, inst_image, seg_image = self.random_crop_torch(rgb_image, inst_image, seg_image, self.crop)
+            rgb_image, inst_image = self.random_crop_torch(rgb_image, inst_image, self.crop)
 
         # to tensor
         rgb_tensor = self.to_tensor(rgb_image)*2.0-1.0
