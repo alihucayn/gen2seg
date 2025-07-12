@@ -189,10 +189,9 @@ class SynchronizedTransform_Hyper:
 
         # to tensor
         rgb_tensor = self.to_tensor(rgb_image)*2.0-1.0
-        seg_tensor = self.to_tensor(seg_image)*255
         inst_tensor = self.to_tensor(inst_image)*255
 
-        return rgb_tensor, seg_tensor, inst_tensor
+        return rgb_tensor, inst_tensor
 
 import math
 # Virtual KITTI 2
@@ -330,86 +329,6 @@ class SynchronizedTransform_VKITTI:
 
 
         return rgb_tensor, instance
-
-
-from torch.utils.data import Sampler
-
-def count_instances(instance_image, bg_color=(0, 0, 0)):
-    """
-    Count the number of unique instances in an instance segmentation image.
-    Assumes instance_image is a PIL Image or a NumPy array.
-    The background is assumed to have the color bg_color.
-    """
-    # Convert to NumPy array if needed.
-    if not isinstance(instance_image, np.ndarray):
-        instance_image = np.array(instance_image)
-    
-    # If image is multi-channel (e.g. RGB), reshape to list of colors.
-    if instance_image.ndim == 3:
-        pixels = instance_image.reshape(-1, instance_image.shape[-1])
-    else:
-        pixels = instance_image.reshape(-1)
-    
-    # Get unique colors.
-    unique_instances = np.unique(pixels, axis=0)
-    
-    # Remove the background.
-    filtered = [inst for inst in unique_instances if not np.all(inst == np.array(bg_color))]
-    
-    return len(filtered)
-
-
-class InstanceBudgetBatchSampler(Sampler):
-    """
-    A custom batch sampler that groups dataset indices into batches such that
-    the total number of instances (as computed from the instance segmentation mask)
-    does not exceed a given threshold.
-    
-    This sampler assumes that your dataset has a method (or attribute) to get the
-    instance segmentation image for a given index. For example, you might assume that:
-    
-        sample = dataset[i]
-        instance_img = sample["instance"]
-    
-    and that you can compute the number of instances from that image.
-    """
-    def __init__(self, dataset, max_instances_per_batch, shuffle=True):
-        self.dataset = dataset
-        self.max_instances = max_instances_per_batch
-        self.shuffle = shuffle
-        self.indices = list(range(len(dataset)))
-    
-    def __iter__(self):
-        if self.shuffle:
-            random.shuffle(self.indices)
-        
-        batch = []
-        batch_instance_count = 0
-        
-        for idx in self.indices:
-            # Get the instance image and count its instances.
-            sample = self.dataset[idx]
-            # Here we assume sample["instance"] is a PIL Image (or convertible to np.array)
-            num_inst = count_instances(sample["instance"])
-            
-            # If adding this sample exceeds our budget, yield the current batch.
-            if batch_instance_count + num_inst > self.max_instances and batch:
-                yield batch
-                batch = []
-                batch_instance_count = 0
-            
-            batch.append(idx)
-            batch_instance_count += num_inst
-        
-        if batch:
-            yield batch
-
-    def __len__(self):
-        # This is not exact because batches are variable in size,
-        # but we can approximate by dividing the total number of samples
-        # by an average batch size.
-        # (A more careful implementation might precompute instance counts for all samples.)
-        return len(self.indices)  # or another rough estimate
 
 #####################
 # Training Datasets
