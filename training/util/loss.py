@@ -10,6 +10,7 @@ import torch.nn as nn
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
 class InstanceSegmentationLoss(nn.Module):
     """
     Custom Segmentation Loss combining:
@@ -164,3 +165,116 @@ class InstanceSegmentationLoss(nn.Module):
 
         # Average across batch
         return total_loss / float(batch_size)
+    
+class BinarySegmentationLoss(nn.Module):
+    def __init__(self):
+        super(BinarySegmentationLoss, self).__init__()
+        self.name = "BinarySegmentationLoss"
+        self._whiteLoss = 0.0
+        self._blackLoss = 0.0
+        self._separationLoss = 0.0
+        
+    @property
+    def whiteLoss(self):
+        _ = self._whiteLoss
+        self._whiteLoss = 0.0  # Reset after accessing
+        return _
+
+    @property
+    def blackLoss(self):
+        _ = self._blackLoss
+        self._blackLoss = 0.0  # Reset after accessing
+        return _
+
+    @property
+    def separationLoss(self):
+        _ = self._separationLoss
+        self._separationLoss = 0.0  # Reset after accessing
+        return _
+    
+    def forward(self, prediction, target):
+        """
+        Binary segmentation loss for document forgery detection.
+        
+        Args:
+            prediction (torch.Tensor): [B, 3, H, W] in [0, 255] (model output)
+            target (torch.Tensor):     [B, 3, H, W] in [0, 255] (authentic=0, forgery=255 in all channel)
+            
+        Returns:
+            torch.Tensor: Scalar loss
+        """
+        prediction = prediction.float()
+        target = target.float()
+        batch_size, _, height, width = prediction.shape
+        total_loss = 0.0
+        
+        # Define class colors - use same device as input tensors
+        device = prediction.device
+        AUTHENTIC_COLOR = torch.tensor([0.0, 0.0, 0.0], device=device)
+        FORGERY_COLOR = torch.tensor([255.0, 255.0, 255.0], device=device)
+        
+        for batch_idx in range(batch_size):
+            # Permute to [H, W, 3]
+            # print(f"prediction[batch_idx].shape: {prediction[batch_idx].shape}")
+            # print(f"target[batch_idx].shape: {target[batch_idx].shape}")
+            pred = prediction[batch_idx].permute(1, 2, 0)  # [H, W, 3]
+            tgt = target[batch_idx].permute(1, 2, 0)       # [H, W, 3]
+            
+            # Debug: print ranges of pred and tgt
+            # print(f"pred range: [{pred.min().item():.2f}, {pred.max().item():.2f}]")
+            # print(f"tgt range: [{tgt.min().item():.2f}, {tgt.max().item():.2f}]")
+            
+            # Create masks - fix forgery mask to match FORGERY_COLOR
+            bg_mask = (tgt == AUTHENTIC_COLOR).all(dim=-1)  # Authentic regions
+            fg_mask = (tgt == FORGERY_COLOR).all(dim=-1)    # Forged regions (white)
+            
+            loss = 0.0
+            valid_losses = 0
+            
+            # 1. Authentic region loss - push toward black
+            if bg_mask.any():
+                bg_pred = pred[bg_mask]
+                # print(f"bg_pred.shape: {bg_pred.shape}")
+                loss_bg = F.huber_loss(
+                    bg_pred, 
+                    torch.zeros_like(bg_pred), 
+                    reduction='mean'
+                )
+                loss += loss_bg
+                self._blackLoss += loss_bg.item()
+                valid_losses += 1
+                
+            # 2. Forgery region loss - push toward white
+            if fg_mask.any():
+                fg_pred = pred[fg_mask]
+                forgery_target = FORGERY_COLOR.expand_as(fg_pred)
+                loss_fg = F.huber_loss(
+                    fg_pred, 
+                    forgery_target,
+                    reduction='mean'
+                )
+                loss += loss_fg
+                self._whiteLoss += loss_fg.item()
+                valid_losses += 1
+                
+            # 3. Class separation loss (critical for subtle forgeries)
+            if bg_mask.any() and fg_mask.any():
+                mean_authentic = pred[bg_mask].mean(dim=0)
+                mean_forgery = pred[fg_mask].mean(dim=0)
+                
+                # Squared Euclidean distance between class means
+                mean_distance = torch.sum((mean_authentic - mean_forgery) ** 2)
+                
+                # Maximize separation (minimize 1/distance)
+                # Using 1/(1+distance) to avoid exploding gradients
+                separation_loss = 300.0 / (1.0 + mean_distance)
+                loss += separation_loss
+                self._separationLoss += separation_loss.item()
+                valid_losses += 1
+            
+            # Normalize by number of active loss terms
+            if valid_losses > 0:
+                total_loss += loss / valid_losses
+        
+        # Return average loss across batch
+        return total_loss / batch_size

@@ -1,0 +1,5 @@
+wandb
+*.sh
+*.pyc
+__pycache__/
+model-finetuned

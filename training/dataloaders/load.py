@@ -6,6 +6,7 @@
 #
 # Additionally, if you use our code please cite our paper, along with the two works above. 
 
+import tempfile
 import torch
 from torch.utils.data import Dataset
 from torchvision import transforms
@@ -17,6 +18,7 @@ import pandas as pd
 import cv2
 import re
 from pathlib import Path
+import jpegio
 
 import torchvision.transforms.functional as TF
 
@@ -345,6 +347,8 @@ import torch
 from torchvision import transforms
 from torch.utils.data import Dataset
 
+from albumentations.pytorch import ToTensorV2
+
 class Hypersim(Dataset):
     def __init__(self, root_dir, transform=True, height=480, width=640, crop=None):
         self.root_dir = root_dir
@@ -403,7 +407,7 @@ class Hypersim(Dataset):
         else:
             print("no transform")
             rgb_tensor = transforms.ToTensor()(rgb_image) *2.0 -1.0 # [-1,1]
-            instance_tensor = torch.from_numpy(np.semantic_tensorarray(instance_image))*2.0-1.0
+            instance_tensor = torch.from_numpy(np.array(instance_image))*2.0-1.0
 
         return {
             "rgb": rgb_tensor,
@@ -477,3 +481,444 @@ class VirtualKITTI2(Dataset):
             "instance": instance_tensor,
             "no_bg": True
         }
+
+
+class RTMDataset(Dataset):
+    def __init__(self, img_dir, label_dir, split_file, crop_size=(512, 512), mode='train', use_dct_quant=False, max_class_ratio=0.9, multiple_compressions=False):
+        self.img_dir = img_dir
+        self.label_dir = label_dir
+        self.crop_size = crop_size
+        self.mode = mode
+        self.use_dct_quant = use_dct_quant
+        self.max_class_ratio = max_class_ratio
+        self.multiple_compressions = multiple_compressions
+        self.hflip = transforms.RandomHorizontalFlip(p=1.0)
+        self.vflip = transforms.RandomVerticalFlip(p=1.0)
+        self.totsr = ToTensorV2()
+        self.toctsr = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Lambda(lambda x: x * 2.0 - 1.0)  # [0,1] → [-1,1]
+        ])
+
+        with open(split_file, 'r') as f:
+            self.samples = [line.strip() for line in f.readlines()]
+            
+    def __len__(self):
+        return len(self.samples)
+    
+    def __getitem__(self, idx):
+        sample = self.samples[idx]
+        image, label = self._load_sample(sample)
+        
+        # Convert label to tensor
+        label = self.totsr(image=label.copy())['image']
+        
+        # Apply augmentations in training mode
+        if self.mode == 'train':
+            if random.uniform(0, 1) < 0.5:
+                image = self.hflip(image)
+                label = self.hflip(label)
+            if random.uniform(0, 1) < 0.5:
+                image = self.vflip(image)
+                label = self.vflip(label)
+
+            if self.multiple_compressions:
+                # Apply multiple JPEG compressions with different qualities
+                q = random.randint(75,100)
+                q2 = random.randint(75,100)
+                q3 = random.randint(75,100)
+                
+                with tempfile.NamedTemporaryFile(delete=True) as tmp:
+                    choicei = random.randint(0,2)
+                    if choicei>1:
+                        image.save(tmp.name,"JPEG",quality=q3)
+                        image=Image.open(tmp.name)
+                    if choicei>0:
+                        image.save(tmp.name,"JPEG",quality=q2)
+                        image=Image.open(tmp.name)
+                    image.save(tmp.name,"JPEG",quality=q)
+                    image = Image.open(tmp.name)
+
+        # Extract Y quantization table from the JPEG image if enabled
+        if self.use_dct_quant:
+            qtb, dct = self._get_Y_quantization_DCT_table(sample)
+            if qtb is None:
+                return self.__getitem__(random.randint(0, len(self.samples) - 1))
+        else:
+            qtb, dct = None, None
+        
+        # Apply cropping
+        if self.use_dct_quant:
+            if self.mode == 'train':
+                # Apply random crop with maximum class ratio of 0.75
+                image, dct, label = self._random_crop(image, dct, label)
+            else:
+                image, dct, label = self._crop(image, dct, label)
+                
+            if image is None or label is None or dct is None:
+                return self.__getitem__(random.randint(0, len(self.samples) - 1))
+        else:
+            if self.mode == 'train':
+                image, label = self._random_crop_simple(image, label)
+            else:
+                image, label = self._crop_simple(image, label)
+                
+            if image is None or label is None:
+                return self.__getitem__(random.randint(0, len(self.samples) - 1))
+        
+        result = {
+            'image': self.toctsr(image),
+            'label': label.float()
+        }
+        
+        if self.use_dct_quant:
+            result['rgb'] = np.clip(np.abs(dct), 0, 20)
+            result['q'] = qtb
+        return result
+    def _load_sample(self, s):
+        """Load a single sample image and its corresponding binary label using PIL."""
+        img_path = f"{self.img_dir}/{s}.jpg"
+        label_path = f"{self.label_dir}/{s}.png"
+
+        # image = Image.open(img_path).convert("L")
+        image = Image.open(img_path)
+        image = image.convert("RGB")  # Convert to RGB for consistency
+        
+        label = Image.open(label_path).convert("L")
+        label = label.convert("RGB")
+        
+        # Convert to numpy array and ensure values are either 0 or 255
+        label_array = np.array(label)
+        # Convert to binary: any non-zero value becomes 255
+        label_binary = (label_array > 0).astype(np.uint8) * 255
+        
+        return image, label_binary
+
+    def _get_class_ratio(self, label, ignore_index=255):
+        """Return a dict of class index -> class ratio, excluding ignore_index."""
+        # Convert tensor to numpy if needed
+        if torch.is_tensor(label):
+            label = label.numpy()
+        
+        # Handle 3-channel RGB labels by converting to binary mask
+        if len(label.shape) == 3 and label.shape[0] == 3:
+            # Convert RGB to binary: [255, 255, 255] -> 1, [0, 0, 0] -> 0
+            binary_label = (label[0, :, :] > 127).astype(np.uint8)
+        else:
+            binary_label = label
+        
+        unique, counts = np.unique(binary_label, return_counts=True)
+
+        # Filter out ignored class
+        valid_mask = unique != ignore_index
+        unique = unique[valid_mask]
+        counts = counts[valid_mask]
+
+        if counts.sum() == 0:
+            return {}  # all pixels were ignored
+
+        class_ratios = dict(zip(unique, counts / counts.sum()))
+        return class_ratios
+
+    def _get_Y_quantization_DCT_table(self, sample):
+        """Extract the Y quantization table and DCT coefficients from the JPEG image."""
+        img_path = f"{self.img_dir}/{sample}.jpg"
+        jpg = jpegio.read(img_path)
+        if (hasattr(jpg, 'quant_tables') and len(jpg.quant_tables) > 0 and 
+            hasattr(jpg, 'coef_arrays') and len(jpg.coef_arrays) > 0):
+            qtable = torch.from_numpy(jpg.quant_tables[0]).to(dtype=torch.int64)
+            dct = jpg.coef_arrays[0].copy()
+            return qtable, dct
+        else:
+            return None, None
+    def _random_crop(self, image, dct, label, stride=8, max_tries=20):
+        """Apply random crop to image, DCT coefficients, and label with class ratio constraints."""
+        h, w = image.size[1], image.size[0]
+        crop_h, crop_w = self.crop_size[1], self.crop_size[0]
+        
+        if h < crop_h or w < crop_w:
+            return None, None, None
+
+        max_x = w - crop_w
+        max_y = h - crop_h
+        if max_x < 0 or max_y < 0:
+            return None, None, None
+
+        possible_x = list(range(0, max_x + 1, stride))
+        possible_y = list(range(0, max_y + 1, stride))
+        if not possible_x or not possible_y:
+            return None, None, None
+
+        for _ in range(max_tries):
+            x = random.choice(possible_x)
+            y = random.choice(possible_y)
+
+            cropped_image = image.crop((x, y, x + crop_w, y + crop_h))
+            # Handle 3-channel RGB labels
+            if len(label.shape) == 3 and label.shape[0] == 3:
+                cropped_label = label[:, y:y + crop_h, x:x + crop_w]
+            else:
+                cropped_label = label[y:y + crop_h, x:x + crop_w]
+
+            cropped_dct = dct[y:y + crop_h, x:x + crop_w]
+
+            if self._ensure_max_class_ratio(cropped_label, ignore_index=255) is not None:
+                return cropped_image, cropped_dct, cropped_label
+
+        return None, None, None
+    
+    def _crop(self, image, dct, label):
+        """Crop the image, DCT coefficients, and label to the specified size."""
+        h, w = image.size[1], image.size[0]
+        if h < self.crop_size[1] or w < self.crop_size[0]:
+            return None, None, None
+            
+        x = (w - self.crop_size[0]) // 2
+        y = (h - self.crop_size[1]) // 2
+        
+        cropped_image = image.crop((x, y, x + self.crop_size[0], y + self.crop_size[1]))
+        
+        # Handle 3-channel RGB labels
+        if len(label.shape) == 3 and label.shape[0] == 3:
+            cropped_label = label[:, y:y + self.crop_size[1], x:x + self.crop_size[0]]
+        else:
+            cropped_label = label[y:y + self.crop_size[1], x:x + self.crop_size[0]]
+        
+        cropped_dct = dct[y:y + self.crop_size[1], x:x + self.crop_size[0]]
+        
+        return cropped_image, cropped_dct, cropped_label
+    
+    def _random_crop_simple(self, image, label, stride=8, max_tries=20):
+        """Apply random crop to image and label without DCT coefficients."""
+        h, w = image.size[1], image.size[0]
+        crop_h, crop_w = self.crop_size[1], self.crop_size[0]
+
+        if h < crop_h or w < crop_w:
+            return None, None
+
+        max_x = w - crop_w
+        max_y = h - crop_h
+        if max_x < 0 or max_y < 0:
+            return None, None
+
+        possible_x = list(range(0, max_x + 1, stride))
+        possible_y = list(range(0, max_y + 1, stride))
+        if not possible_x or not possible_y:
+            return None, None
+
+        for _ in range(max_tries):
+            x = random.choice(possible_x)
+            y = random.choice(possible_y)
+
+            cropped_image = image.crop((x, y, x + crop_w, y + crop_h))
+            # Handle 3-channel RGB labels
+            if len(label.shape) == 3 and label.shape[0] == 3:
+                cropped_label = label[:, y:y + crop_h, x:x + crop_w]
+            else:
+                cropped_label = label[y:y + crop_h, x:x + crop_w]
+
+            if self._ensure_max_class_ratio(cropped_label, ignore_index=255) is not None:
+                return cropped_image, cropped_label
+
+        return None, None
+    
+    def _crop_simple(self, image, label):
+        """Crop the image and label to the specified size without DCT coefficients."""
+        h, w = image.size[1], image.size[0]
+        if h < self.crop_size[1] or w < self.crop_size[0]:
+            return None, None
+            
+        x = (w - self.crop_size[0]) // 2
+        y = (h - self.crop_size[1]) // 2
+        
+        cropped_image = image.crop((x, y, x + self.crop_size[0], y + self.crop_size[1]))
+        
+        # Handle 3-channel RGB labels
+        if len(label.shape) == 3 and label.shape[0] == 3:
+            cropped_label = label[:, y:y + self.crop_size[1], x:x + self.crop_size[0]]
+        else:
+            cropped_label = label[y:y + self.crop_size[1], x:x + self.crop_size[0]]
+        
+        return cropped_image, cropped_label
+    
+    def _ensure_max_class_ratio(self, label, ignore_index=255):
+        """Ensure that the label contains more than one class (excluding ignore_index)
+        and that the dominant class does not exceed the class property ratio."""
+        class_ratios = self._get_class_ratio(label, ignore_index)
+
+        if len(class_ratios) <= 1:  # Only one class (or all ignored)
+            return None
+
+        max_class_ratio = max(class_ratios.values())
+        if max_class_ratio >= self.max_class_ratio:
+            return None
+
+        return label
+
+import lmdb
+import six
+
+class DocTamperDataset(Dataset):
+    def __init__(self, roots, mode, S, T=8192, pilt=False, casia=False, ranger=1, max_nums=None, max_readers=64, multiple_compressions=True, replaceChannels=("dct", "ela")):
+        self.cnts = []
+        self.lens = []
+        self.envs = []
+        self.pilt = pilt
+        self.casia = casia
+        self.ranger = ranger
+        
+        # Initialize LMDB environments
+        for root in roots:
+            if '$' in root:
+                root_use, nums = root.split('$')
+                nums = int(nums)
+                self.envs.append(lmdb.open(root_use, max_readers=max_readers, readonly=True, lock=False, readahead=False, meminit=False))
+                with self.envs[-1].begin(write=False) as txn:
+                    str = 'num-samples'.encode('utf-8')
+                    nSamples = int(txn.get(str))
+                    if max_nums is not None:
+                        nSamples = min(nSamples, max_nums)
+                self.lens.append(nSamples * nums)
+                self.cnts.append(nSamples)
+            else:
+                self.envs.append(lmdb.open(root, max_readers=max_readers, readonly=True, lock=False, readahead=False, meminit=False))
+                with self.envs[-1].begin(write=False) as txn:
+                    str = 'num-samples'.encode('utf-8')
+                    nSamples = int(txn.get(str))
+                    if max_nums is not None:
+                        nSamples = min(nSamples, max_nums)
+                self.lens.append(nSamples)
+                self.cnts.append(nSamples)
+        
+        self.lens = np.array(self.lens)
+        self.sums = np.cumsum(self.lens)
+        self.len_sum = len(self.sums)
+        self.nSamples = self.lens.sum()
+        self.S = S
+        self.T = T
+        self.mode = mode
+        self.multiple_compressions = multiple_compressions
+        self.replaceChannels = replaceChannels
+        
+        print('*' * 60)
+        print('Dataset initialized!', S, pilt)
+        print('*' * 60)
+        
+        # Initialize random indices
+        npr = np.arange(self.nSamples)
+        np.random.seed(S)
+        self.idxs = np.random.choice(self.nSamples, self.nSamples, replace=False)
+        
+        # Initialize transforms
+        self.hflip = transforms.RandomHorizontalFlip(p=1.0)
+        self.vflip = transforms.RandomVerticalFlip(p=1.0)
+        self.totsr = ToTensorV2()
+        self.toctsr = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Lambda(lambda x: x * 2.0 - 1.0)  # [0,1] → [-1,1]
+        ])
+
+    def calnum(self, num):
+        if num < self.lens[0]:
+            return 0, num % self.cnts[0]
+        else:
+            for li, l in enumerate(self.sums):
+                if ((l <= num) and ((li == self.len_sum) or (num < self.sums[li + 1]))):
+                    return (li + 1), ((num - l) % self.cnts[li + 1])
+
+    def __len__(self):
+        return self.nSamples
+    
+    def _replace_with_dct(self, im, dct, dim=0, channel=0):
+        """Replace a specific channel of the image with DCT coefficients."""
+        if isinstance(im, Image.Image):
+            im = np.array(im)
+        if isinstance(dct, np.ndarray):
+            dct = torch.from_numpy(dct).float()
+            
+
+    def __getitem__(self, idx):
+        itm_num = self.idxs[idx]
+        env_num, index = self.calnum(itm_num)
+        
+        with self.envs[env_num].begin(write=False) as txn:
+            # Load image
+            img_key = 'image-%09d' % index
+            imgbuf = txn.get(img_key.encode('utf-8'))
+            buf = six.BytesIO()
+            buf.write(imgbuf)
+            buf.seek(0)
+            im = Image.open(buf)
+            # Load label
+            lbl_key = 'label-%09d' % index
+            lblbuf = txn.get(lbl_key.encode('utf-8'))
+            mask = (cv2.imdecode(np.frombuffer(lblbuf, dtype=np.uint8), 0) != 0).astype(np.uint8)
+            info_key = 'info-%09d' % index
+            infobuf = txn.get(info_key.encode('utf-8'))
+
+            
+            H, W = mask.shape
+            if (H != 512) or (W != 512):
+                return self.__getitem__(random.randint(0, self.nSamples - 1))
+            
+            # Data augmentation
+            if random.uniform(0, 1) < 0.5:
+                im = im.rotate(90)
+                mask = np.rot90(mask, 1)
+            
+            mask = self.totsr(image=mask.copy())['image']
+            
+            if random.uniform(0, 1) < 0.5:
+                im = self.hflip(im)
+                mask = self.hflip(mask)
+            
+            if random.uniform(0, 1) < 0.5:
+                im = self.vflip(im)
+                mask = self.vflip(mask)
+                
+            if self.multiple_compressions and self.mode == 'train':
+                # Apply multiple JPEG compressions with different qualities
+                q = random.randint(75,100)
+                q2 = random.randint(75,100)
+                q3 = random.randint(75,100)
+                
+                with tempfile.NamedTemporaryFile(delete=True) as tmp:
+                    if infobuf and '1' in infobuf:
+                        choicei=0
+                    else:
+                        choicei = random.randint(0,2)
+                    if choicei>1:
+                        im.save(tmp.name,"JPEG",quality=q3)
+                        im=Image.open(tmp.name)
+                    if choicei>0:
+                        im.save(tmp.name,"JPEG",quality=q2)
+                        im=Image.open(tmp.name)
+                    im.save(tmp.name,"JPEG",quality=q)
+                    im = Image.open(tmp.name)
+
+            # Convert to grayscale RGB and apply normalization
+            im = im.convert('RGB')
+            mask = mask.squeeze(0)
+            mask = torch.from_numpy(np.stack([mask * 255] * 3, axis=0).astype(np.uint8))
+            # print(f"mask shape: {mask.shape}")
+            # print(f"mask shape: {mask.shape}")
+            # print(f"im shape: {np.array(im).shape}")
+            
+            return {
+                'image': self.toctsr(im),
+                'label': mask.float()
+            }
+
+
+if __name__ == "__main__":
+    dataset = DocTamperDataset(["/netscratch/hussain/TamperText/Datasets/DocTamperV1/DocTamperV1-TestingSet"], mode='train', S=0, T=8192, pilt=False, casia=False, ranger=1, max_nums=None)
+    
+    for i in range(10):
+        sample = dataset[i]
+        print(f"Sample {i}:")
+        print(f"  Image shape: {sample['image'].shape}")
+        print(f"  Image min/max: {sample['image'].min():.3f}/{sample['image'].max():.3f}")
+        print(f"  Label shape: {sample['label'].shape}")
+        print(f"  Label min/max: {sample['label'].min():.3f}/{sample['label'].max():.3f}")
+        print(f"  Label unique values: {torch.unique(sample['label'])}")
+        print()
