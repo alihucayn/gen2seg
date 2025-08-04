@@ -52,6 +52,12 @@ from eval.metrics.iou_metric import DocumentForgeryEvaluator
 
 if is_wandb_available():
     import wandb
+    if os.environ.get("WANDB_RUN_ID"):
+        wandb.init(
+            id=os.environ["WANDB_RUN_ID"],
+            resume="must",
+            project=os.environ["WANDB_PROJECT"]
+        )
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 # check_min_version("diffusers >= 0.21.0.dev0")

@@ -759,7 +759,7 @@ import lmdb
 import six
 
 class DocTamperDataset(Dataset):
-    def __init__(self, roots, mode, S, T=8192, pilt=False, casia=False, ranger=1, max_nums=None, max_readers=64, multiple_compressions=True, replaceChannels=("dct", "ela")):
+    def __init__(self, roots, mode, S, T=8192, pilt=False, casia=False, ranger=1, max_nums=None, max_readers=64, multiple_compressions=True):
         self.cnts = []
         self.lens = []
         self.envs = []
@@ -798,7 +798,6 @@ class DocTamperDataset(Dataset):
         self.T = T
         self.mode = mode
         self.multiple_compressions = multiple_compressions
-        self.replaceChannels = replaceChannels
         
         print('*' * 60)
         print('Dataset initialized!', S, pilt)
@@ -829,14 +828,6 @@ class DocTamperDataset(Dataset):
     def __len__(self):
         return self.nSamples
     
-    def _replace_with_dct(self, im, dct, dim=0, channel=0):
-        """Replace a specific channel of the image with DCT coefficients."""
-        if isinstance(im, Image.Image):
-            im = np.array(im)
-        if isinstance(dct, np.ndarray):
-            dct = torch.from_numpy(dct).float()
-            
-
     def __getitem__(self, idx):
         itm_num = self.idxs[idx]
         env_num, index = self.calnum(itm_num)
@@ -881,6 +872,7 @@ class DocTamperDataset(Dataset):
                 q = random.randint(75,100)
                 q2 = random.randint(75,100)
                 q3 = random.randint(75,100)
+                elaQuality = 80
                 
                 with tempfile.NamedTemporaryFile(delete=True) as tmp:
                     if infobuf and '1' in infobuf:
@@ -895,6 +887,17 @@ class DocTamperDataset(Dataset):
                         im=Image.open(tmp.name)
                     im.save(tmp.name,"JPEG",quality=q)
                     im = Image.open(tmp.name)
+                    if self.use_dct_quant:
+                        jpgImage = jpegio.read(tmp.name)
+                        dct = jpgImage.coef_arrays[0].copy()
+                    if self.use_dct_quant:
+                        oldimg = np.array(im)
+                        im.save(tmp.name, "JPEG", quality=elaQuality)
+                        newimg = Image.open(tmp.name)
+                        # newimg = newimg.convert('RGB')
+                        newimg = np.array(newimg)
+                        ela = np.abs(newimg - oldimg)
+                        ela = np.clip(ela, 0, 255).astype(np.uint8)
 
             # Convert to grayscale RGB and apply normalization
             im = im.convert('RGB')
@@ -904,14 +907,23 @@ class DocTamperDataset(Dataset):
             # print(f"mask shape: {mask.shape}")
             # print(f"im shape: {np.array(im).shape}")
             
-            return {
+            result = {
                 'image': self.toctsr(im),
-                'label': mask.float()
+                'label': mask.float(),
             }
+            if self.use_dct_quant:
+                if dct is not None:
+                    result['dct'] = np.clip(np.abs(dct), 0, 20)
+                if ela is not None:
+                    result['ela'] = np.clip(ela, 0, 255)
+                else:
+                    result['ela'] = None
+            
+            return result
 
 
 if __name__ == "__main__":
-    dataset = DocTamperDataset(["/netscratch/hussain/TamperText/Datasets/DocTamperV1/DocTamperV1-TestingSet"], mode='train', S=0, T=8192, pilt=False, casia=False, ranger=1, max_nums=None)
+    dataset = DocTamperDataset(["/netscratch/hussain/TamperText/Datasets/DocTamperV1/DocTamperV1-TestingSet"], mode='train', S=0, T=8192, pilt=False, casia=False, ranger=1, max_nums=None, max_readers=64, multiple_compressions=True)
     
     for i in range(10):
         sample = dataset[i]
@@ -921,4 +933,10 @@ if __name__ == "__main__":
         print(f"  Label shape: {sample['label'].shape}")
         print(f"  Label min/max: {sample['label'].min():.3f}/{sample['label'].max():.3f}")
         print(f"  Label unique values: {torch.unique(sample['label'])}")
+        if "dct" in dataset.replace_channels:
+            print(f"  DCT shape: {sample['rgb'].shape}")
+            print(f"  DCT min/max: {sample['rgb'].min():.3f}/{sample['rgb'].max():.3f}")
+        if "ela" in dataset.replace_channels:
+            print(f"  ELA shape: {sample['ela'].shape}")
+            print(f"  ELA min/max: {sample['ela'].min():.3f}/{sample['ela'].max():.3f}")
         print()
