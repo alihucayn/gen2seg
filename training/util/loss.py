@@ -167,7 +167,7 @@ class InstanceSegmentationLoss(nn.Module):
         return total_loss / float(batch_size)
     
 class BinarySegmentationLoss(nn.Module):
-    def __init__(self):
+    def __init__(self, channels=3):
         super(BinarySegmentationLoss, self).__init__()
         self.name = "BinarySegmentationLoss"
         self._whiteLoss = 0.0
@@ -197,6 +197,11 @@ class BinarySegmentationLoss(nn.Module):
         Binary segmentation loss for document forgery detection.
         
         Args:
+            if channels == 1:
+            prediction (torch.Tensor): [B, 1, H, W] in [0, 255] (model output)
+            target (torch.Tensor):     [B, 1, H, W] in [0, 255] (authentic=0, forgery=255)
+            
+            if channels == 3:
             prediction (torch.Tensor): [B, 3, H, W] in [0, 255] (model output)
             target (torch.Tensor):     [B, 3, H, W] in [0, 255] (authentic=0, forgery=255 in all channel)
             
@@ -210,8 +215,12 @@ class BinarySegmentationLoss(nn.Module):
         
         # Define class colors - use same device as input tensors
         device = prediction.device
-        AUTHENTIC_COLOR = torch.tensor([0.0, 0.0, 0.0], device=device)
-        FORGERY_COLOR = torch.tensor([255.0, 255.0, 255.0], device=device)
+        if prediction.shape[1] == 1:  # Single channel case
+            AUTHENTIC_COLOR = torch.tensor([0.0], device=device)
+            FORGERY_COLOR = torch.tensor([255.0], device=device)
+        else:
+            AUTHENTIC_COLOR = torch.tensor([0.0, 0.0, 0.0], device=device)
+            FORGERY_COLOR = torch.tensor([255.0, 255.0, 255.0], device=device)
         
         for batch_idx in range(batch_size):
             # Permute to [H, W, 3]
@@ -278,3 +287,341 @@ class BinarySegmentationLoss(nn.Module):
         
         # Return average loss across batch
         return total_loss / batch_size
+
+
+class BinarySegmentationLossV2(nn.Module):
+    def __init__(self):
+        super(BinarySegmentationLossV2, self).__init__()
+        self.name = "BinarySegmentationLossV2"
+        self.BCE = nn.BCELoss(reduction='sum')  # Use BCELoss instead of BCEWithLogitsLoss
+        self._whiteLoss = 0.0
+        self._blackLoss = 0.0
+        self._separationLoss = 0.0
+        self._ceLoss = 0.0
+        
+    @property
+    def whiteLoss(self):
+        _ = self._whiteLoss
+        self._whiteLoss = 0.0  # Reset after accessing
+        return _
+
+    @property
+    def blackLoss(self):
+        _ = self._blackLoss
+        self._blackLoss = 0.0  # Reset after accessing
+        return _
+
+    @property
+    def separationLoss(self):
+        _ = self._separationLoss
+        self._separationLoss = 0.0  # Reset after accessing
+        return _
+    
+    @property
+    def ceLoss(self):
+        _ = self._ceLoss
+        self._ceLoss = 0.0  # Reset after accessing
+        return _
+    
+    def forward(self, prediction, target):
+        """
+        Binary segmentation loss for document forgery detection.
+        
+        Args:
+            prediction (torch.Tensor): [B, 1, H, W] in [0, 255] (model output)
+            target (torch.Tensor):     [B, 1, H, W] in [0, 255] (authentic=0, forgery=255)
+
+        Returns:
+            torch.Tensor: Scalar loss
+        """
+        prediction = prediction.float()
+        target = target.float()
+        batch_size, _, height, width = prediction.shape
+        total_loss = 0.0
+        
+        # Define class colors - use same device as input tensors
+        device = prediction.device
+        AUTHENTIC_COLOR = torch.tensor([0.0], device=device)
+        FORGERY_COLOR = torch.tensor([255.0], device=device)
+        
+        for batch_idx in range(batch_size):
+            # Permute to [H, W, 3]
+            # print(f"prediction[batch_idx].shape: {prediction[batch_idx].shape}")
+            # print(f"target[batch_idx].shape: {target[batch_idx].shape}")
+            pred = prediction[batch_idx].permute(1, 2, 0)  # [H, W, 3]
+            tgt = target[batch_idx].permute(1, 2, 0)       # [H, W, 3]
+            
+            # Debug: print ranges of pred and tgt
+            # print(f"pred range: [{pred.min().item():.2f}, {pred.max().item():.2f}]")
+            # print(f"tgt range: [{tgt.min().item():.2f}, {tgt.max().item():.2f}]")
+            
+            # Create masks - fix forgery mask to match FORGERY_COLOR
+            bg_mask = (tgt == AUTHENTIC_COLOR).all(dim=-1)  # Authentic regions
+            fg_mask = (tgt == FORGERY_COLOR).all(dim=-1)    # Forged regions (white)
+            
+            loss = 0.0
+            valid_losses = 0
+            
+            # 1. Authentic region loss - push toward black
+            if bg_mask.any():
+                bg_pred = pred[bg_mask]
+                # print(f"bg_pred.shape: {bg_pred.shape}")
+                loss_bg = F.huber_loss(
+                    bg_pred, 
+                    torch.zeros_like(bg_pred), 
+                    reduction='mean'
+                )
+                loss += loss_bg
+                self._blackLoss += loss_bg.item()
+                valid_losses += 1
+                
+            # 2. Forgery region loss - push toward white
+            if fg_mask.any():
+                fg_pred = pred[fg_mask]
+                forgery_target = FORGERY_COLOR.expand_as(fg_pred)
+                loss_fg = F.huber_loss(
+                    fg_pred, 
+                    forgery_target,
+                    reduction='mean'
+                )
+                loss += loss_fg
+                self._whiteLoss += loss_fg.item()
+                valid_losses += 1
+                
+            # 3. Class separation loss (critical for subtle forgeries)
+            if bg_mask.any() and fg_mask.any():
+                mean_authentic = pred[bg_mask].mean(dim=0)
+                mean_forgery = pred[fg_mask].mean(dim=0)
+                
+                # Squared Euclidean distance between class means
+                mean_distance = torch.sum((mean_authentic - mean_forgery) ** 2)
+                
+                # Maximize separation (minimize 1/distance)
+                # Using 1/(1+distance) to avoid exploding gradients
+                separation_loss = 300.0 / (1.0 + mean_distance)
+                loss += separation_loss
+                self._separationLoss += separation_loss.item()
+                valid_losses += 1
+            
+            # Normalize by number of active loss terms
+            if valid_losses > 0:
+                total_loss += loss / valid_losses
+        
+        # Normalise
+        # Normalize target and prediction from [0, 255] to [0, 1]
+        target_normalized = target / 255.0
+        prediction_normalized = prediction / 255.0
+        bce_loss = self.BCE(prediction_normalized, target_normalized)
+        self._ceLoss += bce_loss.item()
+        total_loss += bce_loss
+        
+        # Return average loss across batch
+        return total_loss / batch_size
+
+
+class BinarySegmentationLossV3(nn.Module):
+    def __init__(self):
+        super(BinarySegmentationLossV3, self).__init__()
+        self.name = "BinarySegmentationLossV3"
+        self._whiteLoss = 0.0
+        self._blackLoss = 0.0
+        self._separationLoss = 0.0
+        
+    @property
+    def whiteLoss(self):
+        _ = self._whiteLoss
+        self._whiteLoss = 0.0  # Reset after accessing
+        return _
+
+    @property
+    def blackLoss(self):
+        _ = self._blackLoss
+        self._blackLoss = 0.0  # Reset after accessing
+        return _
+
+    @property
+    def separationLoss(self):
+        _ = self._separationLoss
+        self._separationLoss = 0.0  # Reset after accessing
+        return _
+    
+    def forward(self, prediction, target):
+        """
+        Binary segmentation loss for document forgery detection.
+        
+        Args:
+            prediction (torch.Tensor): [B, 3, H, W] in [0, 255] (model output)
+            target (torch.Tensor):     [B, 3, H, W] in [0, 255] (authentic=0, forgery=255 in all channel)
+            
+        Returns:
+            torch.Tensor: Scalar loss
+        """
+        prediction = prediction.float()
+        target = target.float()
+        batch_size, _, height, width = prediction.shape
+        total_loss = 0.0
+        
+        # Define class colors - use same device as input tensors
+        device = prediction.device
+        if prediction.shape[1] == 1:  # Single channel case
+            AUTHENTIC_COLOR = torch.tensor([0.0], device=device)
+            FORGERY_COLOR = torch.tensor([255.0], device=device)
+        else:
+            AUTHENTIC_COLOR = torch.tensor([0.0, 0.0, 0.0], device=device)
+            FORGERY_COLOR = torch.tensor([255.0, 255.0, 255.0], device=device)
+        
+        for batch_idx in range(batch_size):
+            # Permute to [H, W, 3]
+            # print(f"prediction[batch_idx].shape: {prediction[batch_idx].shape}")
+            # print(f"target[batch_idx].shape: {target[batch_idx].shape}")
+            pred = prediction[batch_idx].permute(1, 2, 0)  # [H, W, 3]
+            tgt = target[batch_idx].permute(1, 2, 0)       # [H, W, 3]
+            
+            # Debug: print ranges of pred and tgt
+            # print(f"pred range: [{pred.min().item():.2f}, {pred.max().item():.2f}]")
+            # print(f"tgt range: [{tgt.min().item():.2f}, {tgt.max().item():.2f}]")
+            
+            # Create masks - fix forgery mask to match FORGERY_COLOR
+            bg_mask = (tgt == AUTHENTIC_COLOR).all(dim=-1)  # Authentic regions
+            fg_mask = (tgt == FORGERY_COLOR).all(dim=-1)    # Forged regions (white)
+            
+            loss = 0.0
+            valid_losses = 0
+            
+            # 1. Authentic region loss - push toward black
+            if bg_mask.any():
+                bg_pred = pred[bg_mask].mean(dim=0)
+                # print(f"bg_pred.shape: {bg_pred.shape}")
+                loss_bg = F.huber_loss(
+                    bg_pred, 
+                    AUTHENTIC_COLOR, 
+                    reduction='mean'
+                )
+                loss += loss_bg
+                self._blackLoss += loss_bg.item()
+                valid_losses += 1
+                
+            # 2. Forgery region loss - push toward white
+            if fg_mask.any():
+                fg_pred = pred[fg_mask].mean(dim=0)
+                loss_fg = F.huber_loss(
+                    fg_pred, 
+                    FORGERY_COLOR,
+                    reduction='mean'
+                )
+                loss += loss_fg
+                self._whiteLoss += loss_fg.item()
+                valid_losses += 1
+                
+            # 3. Class separation loss (critical for subtle forgeries)
+            if bg_mask.any() and fg_mask.any():
+                mean_authentic = pred[bg_mask].mean(dim=0)
+                mean_forgery = pred[fg_mask].mean(dim=0)
+                
+                # Squared Euclidean distance between class means
+                mean_distance = torch.sum((mean_authentic - mean_forgery) ** 2)
+                
+                # Maximize separation (minimize 1/distance)
+                # Using 1/(1+distance) to avoid exploding gradients
+                separation_loss = 300.0 / (1.0 + mean_distance)
+                loss += separation_loss
+                self._separationLoss += separation_loss.item()
+                valid_losses += 1
+            
+            # Normalize by number of active loss terms
+            if valid_losses > 0:
+                total_loss += loss / valid_losses
+        
+        # Return average loss across batch
+        return total_loss / batch_size
+
+
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+# ------------------------------
+# Lovász hinge helpers
+# ------------------------------
+def lovasz_grad(gt_sorted):
+    """
+    Computes gradient of the Lovasz extension w.r.t sorted errors
+    """
+    p = len(gt_sorted)
+    gts = gt_sorted.sum()
+    intersection = gts - gt_sorted.float().cumsum(0)
+    union = gts + (1 - gt_sorted).float().cumsum(0)
+    jaccard = 1.0 - intersection / union
+    if p > 1:  # gradient is piecewise constant
+        jaccard[1:p] = jaccard[1:p] - jaccard[0:-1]
+    return jaccard
+
+def lovasz_hinge_flat(logits, labels):
+    """
+    Binary Lovasz hinge loss for flat tensors
+    logits: [P] (float)
+    labels: [P] (0 or 1)
+    """
+    if len(labels) == 0:
+        return logits.sum() * 0.0
+
+    signs = 2.0 * labels.float() - 1.0
+    errors = (1.0 - logits * signs)
+
+    errors_sorted, perm = torch.sort(errors, dim=0, descending=True)
+    labels_sorted = labels[perm]
+    grad = lovasz_grad(labels_sorted)
+    loss = torch.dot(F.relu(errors_sorted), grad)
+    return loss
+
+def flatten_binary_scores(preds, labels):
+    """
+    Flattens predictions and labels to 1D
+    """
+    preds = preds.contiguous().view(-1)
+    labels = labels.contiguous().view(-1)
+    return preds, labels
+
+# ------------------------------
+# Main Lovasz loss class
+# ------------------------------
+class BinaryLovaszLoss(nn.Module):
+    def __init__(self):
+        super(BinaryLovaszLoss, self).__init__()
+        self.name = "BinaryLovaszLoss"
+
+    def forward(self, prediction, target):
+        """
+        Args:
+            prediction: [B, 3, H, W] in [0, 255] (model output)
+            target:     [B, 3, H, W] in [0, 255]
+                        authentic=black (0), forgery=white (255)
+        Returns:
+            torch.Tensor: Scalar loss
+        """
+        device = prediction.device
+        prediction = prediction.float() / 255.0  # scale to [0,1]
+        target = target.float() / 255.0          # scale to [0,1]
+
+        batch_size = prediction.size(0)
+        losses = []
+
+        for b in range(batch_size):
+            pred_b = prediction[b]  # [3, H, W]
+            tgt_b = target[b]       # [3, H, W]
+
+            # Convert to binary mask using the first channel
+            # Works because authentic=0, forgery=1 after scaling
+            pred_gray = pred_b.mean(dim=0)  # [H, W]
+            tgt_gray = tgt_b.mean(dim=0)    # [H, W]
+
+            # Convert logits: center around 0 for hinge loss
+            logits = (pred_gray * 2.0 - 1.0)  # range [-1, 1]
+            labels = (tgt_gray > 0.5).float()
+
+            logits_flat, labels_flat = flatten_binary_scores(logits, labels)
+            loss_b = lovasz_hinge_flat(logits_flat, labels_flat)
+            losses.append(loss_b)
+
+        return torch.mean(torch.stack(losses))

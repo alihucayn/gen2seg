@@ -43,7 +43,7 @@ from diffusers.utils.torch_utils import is_compiled_module
 
 # Import custom modules
 from dataloaders.load import RTMDataset, DocTamperDataset
-from util.loss import BinaryLovaszLoss, BinarySegmentationLoss, BinarySegmentationLossV2, BinarySegmentationLossV3, InstanceSegmentationLoss
+from util.loss import BinarySegmentationLoss, BinarySegmentationLossV2, InstanceSegmentationLoss
 from util.unet_prep import replace_unet_conv_in
 
 # Import custom learning rate scheduler
@@ -328,10 +328,10 @@ def parse_args():
     
     parser.add_argument("--multiple_compressions", action="store_true", help="Use multiple compressions for RTMDataset.")
     
-    parser.add_argument("--wandb_image_interval", type=int, default=5, help="Interval for logging images to wandb.")
-
-    parser.add_argument("--loss_type", type=str, default="bseg", choices=["bce", "dice",  "bseg", "iseg", "bsegv3", "lovasz"], help="Loss function type to use for training.")
-
+    parser.add_argument("--wandb_image_interval", type=int, default=1, help="Interval for logging images to wandb.")
+    
+    parser.add_argument("--loss_type", type=str, default="bseg", choices=["bce", "dice",  "bseg", "iseg"], help="Loss function type to use for training.")
+    
     parser.add_argument("--timestep", type=int, default=None, help="Timestep for training. If None, no timestep is used.")
 
     args = parser.parse_args()
@@ -826,10 +826,6 @@ def main():
         loss_fn = BinarySegmentationLossV2()
     elif args.loss_type == "iseg":
         loss_fn = InstanceSegmentationLoss()
-    elif args.loss_type == "bsegv3":
-        loss_fn = BinarySegmentationLossV3()
-    elif args.loss_type == "lovasz":
-        loss_fn = BinaryLovaszLoss()
 
     # Pre-compute empty text CLIP encoding
     empty_token    = tokenizer([""], padding="max_length", truncation=True, return_tensors="pt").input_ids
@@ -919,10 +915,7 @@ def main():
                             rgb_img_to_log = (rgb_current_estimate[0].detach().cpu() * 255).clamp(0, 255).to(torch.uint8)
                         else:
                             img_to_log = current_estimate[0].detach().cpu().clamp(0, 255).to(torch.uint8)
-                            if convLayer is not None:
-                                rgb_img_to_log = img_to_log.clone()
-                            else:
-                                rgb_img_to_log = None
+                            rgb_img_to_log = img_to_log.clone()
                         
                         gt_to_log = ground_truth[0].detach().cpu().clamp(0, 255).to(torch.uint8)
                         # Properly scale the input image for visualization - make sure to clamp values
@@ -937,11 +930,11 @@ def main():
                             gt_to_log = gt_to_log.permute(1, 2, 0)
                         if in_img_to_log.ndim == 3 and in_img_to_log.shape[0] in [1, 3]:
                             in_img_to_log = in_img_to_log.permute(1, 2, 0)
-                        if rgb_img_to_log is not None and rgb_img_to_log.ndim == 3 and rgb_img_to_log.shape[0] in [1, 3]:
+                        if rgb_img_to_log.ndim == 3 and rgb_img_to_log.shape[0] in [1, 3]:
                             rgb_img_to_log = rgb_img_to_log.permute(1, 2, 0)
                         wandb.log({
                             "predicted_image": wandb.Image(img_to_log.numpy(), caption="Predicted"),
-                            "rgb_before_conv": wandb.Image(rgb_img_to_log.numpy(), caption="RGB Before Conv") if rgb_img_to_log is not None else None,
+                            "rgb_before_conv": wandb.Image(rgb_img_to_log.numpy(), caption="RGB Before Conv"),
                             "ground_truth": wandb.Image(gt_to_log.numpy(), caption="Ground Truth"),
                             "input_image": wandb.Image(in_img_to_log.numpy(), caption="Input Image"),
                             # "binary_mask": wandb.Image(bin_img_to_log, caption="Binary Mask"),
@@ -955,8 +948,6 @@ def main():
                     if ground_truth.max() > 1.0:
                         ground_truth = ground_truth / 255.0  # Scale from [0, 255] to [0, 1]
                     estimation_loss = loss_fn(current_estimate.mean(dim=1, keepdim=True), ground_truth)
-                elif args.loss_type == "iseg":
-                    estimation_loss = loss_fn(current_estimate, ground_truth, batch["no_bg"])
                 else:
                     # For other losses, both should be in same scale [0, 255]
                     estimation_loss = loss_fn(current_estimate, ground_truth)
@@ -989,11 +980,11 @@ def main():
 
                 # Log the average step loss
                 accelerator.log({"train_loss": train_loss}, step=global_step)
-                if args.loss_type in ["bseg", "bsegv3"]:
+                if args.loss_type == "bseg":
                     accelerator.log({"white_loss": loss_fn.whiteLoss}, step=global_step)
                     accelerator.log({"black_loss": loss_fn.blackLoss}, step=global_step)
                     accelerator.log({"separation_loss": loss_fn.separationLoss}, step=global_step)
-                elif args.loss_type in ["bce_seg"]:
+                elif args.loss_type in ["bce_seg", "iseg"]:
                     accelerator.log({"white_loss": loss_fn.whiteLoss}, step=global_step)
                     accelerator.log({"black_loss": loss_fn.blackLoss}, step=global_step)
                     accelerator.log({"separation_loss": loss_fn.separationLoss}, step=global_step)

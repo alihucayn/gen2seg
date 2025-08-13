@@ -400,6 +400,7 @@ class Hypersim(Dataset):
     def __getitem__(self, idx):
         pair = self.pairs[idx]
         rgb_image = Image.open(pair['rgb_path']).convert('RGB')
+        
         instance_image = Image.open(pair['instance_path'])
 
         if self.transform:
@@ -484,7 +485,7 @@ class VirtualKITTI2(Dataset):
 
 
 class RTMDataset(Dataset):
-    def __init__(self, img_dir, label_dir, split_file, crop_size=(512, 512), mode='train', use_dct_quant=False, max_class_ratio=0.9, multiple_compressions=False):
+    def __init__(self, img_dir, label_dir, split_file, crop_size=(512, 512), mode='train', use_dct_quant=False, max_class_ratio=0.9, multiple_compressions=False, grayscale_labels=False):
         self.img_dir = img_dir
         self.label_dir = label_dir
         self.crop_size = crop_size
@@ -492,6 +493,7 @@ class RTMDataset(Dataset):
         self.use_dct_quant = use_dct_quant
         self.max_class_ratio = max_class_ratio
         self.multiple_compressions = multiple_compressions
+        self.grayscale_labels = grayscale_labels
         self.hflip = transforms.RandomHorizontalFlip(p=1.0)
         self.vflip = transforms.RandomVerticalFlip(p=1.0)
         self.totsr = ToTensorV2()
@@ -568,7 +570,8 @@ class RTMDataset(Dataset):
         
         result = {
             'image': self.toctsr(image),
-            'label': label.float()
+            'label': label.float(),
+            'no_bg': False
         }
         
         if self.use_dct_quant:
@@ -585,12 +588,15 @@ class RTMDataset(Dataset):
         image = image.convert("RGB")  # Convert to RGB for consistency
         
         label = Image.open(label_path).convert("L")
-        label = label.convert("RGB")
-        
+        if not self.grayscale_labels:
+            label = label.convert("RGB")
+
         # Convert to numpy array and ensure values are either 0 or 255
         label_array = np.array(label)
+        if self.grayscale_labels:
+            label_array = np.stack([label_array], axis=0) if not self.grayscale_labels else label_array
         # Convert to binary: any non-zero value becomes 255
-        label_binary = (label_array > 0).astype(np.uint8) * 255
+        label_binary = (label_array > 127.5).astype(np.uint8) * 255
         
         return image, label_binary
 
@@ -606,6 +612,7 @@ class RTMDataset(Dataset):
             binary_label = (label[0, :, :] > 127).astype(np.uint8)
         else:
             binary_label = label
+            binary_label = (binary_label > 127).astype(np.uint8)
         
         unique, counts = np.unique(binary_label, return_counts=True)
 
@@ -712,14 +719,14 @@ class RTMDataset(Dataset):
 
             cropped_image = image.crop((x, y, x + crop_w, y + crop_h))
             # Handle 3-channel RGB labels
-            if len(label.shape) == 3 and label.shape[0] == 3:
+            # if len(label.shape) == 3 and label.shape[0] == 3:
+            if len(label.shape) == 3:
                 cropped_label = label[:, y:y + crop_h, x:x + crop_w]
             else:
                 cropped_label = label[y:y + crop_h, x:x + crop_w]
 
             if self._ensure_max_class_ratio(cropped_label, ignore_index=255) is not None:
                 return cropped_image, cropped_label
-
         return None, None
     
     def _crop_simple(self, image, label):
@@ -734,7 +741,8 @@ class RTMDataset(Dataset):
         cropped_image = image.crop((x, y, x + self.crop_size[0], y + self.crop_size[1]))
         
         # Handle 3-channel RGB labels
-        if len(label.shape) == 3 and label.shape[0] == 3:
+        # if len(label.shape) == 3 and label.shape[0] == 3:
+        if len(label.shape) == 3:
             cropped_label = label[:, y:y + self.crop_size[1], x:x + self.crop_size[0]]
         else:
             cropped_label = label[y:y + self.crop_size[1], x:x + self.crop_size[0]]
@@ -759,7 +767,7 @@ import lmdb
 import six
 
 class DocTamperDataset(Dataset):
-    def __init__(self, roots, mode, S, T=8192, pilt=False, casia=False, ranger=1, max_nums=None, max_readers=64, multiple_compressions=True):
+    def __init__(self, roots, mode, S, T=8192, pilt=False, casia=False, ranger=1, max_nums=None, max_readers=64, multiple_compressions=True, use_dct_quant=False, grayscale_labels=False):
         self.cnts = []
         self.lens = []
         self.envs = []
@@ -798,6 +806,8 @@ class DocTamperDataset(Dataset):
         self.T = T
         self.mode = mode
         self.multiple_compressions = multiple_compressions
+        self.use_dct_quant = use_dct_quant
+        self.grayscale_labels = grayscale_labels
         
         print('*' * 60)
         print('Dataset initialized!', S, pilt)
@@ -902,7 +912,9 @@ class DocTamperDataset(Dataset):
             # Convert to grayscale RGB and apply normalization
             im = im.convert('RGB')
             mask = mask.squeeze(0)
-            mask = torch.from_numpy(np.stack([mask * 255] * 3, axis=0).astype(np.uint8))
+            mask = mask * 255
+            if not self.grayscale_labels:
+                mask = torch.from_numpy(np.stack([mask] * 3, axis=0).astype(np.uint8))
             # print(f"mask shape: {mask.shape}")
             # print(f"mask shape: {mask.shape}")
             # print(f"im shape: {np.array(im).shape}")
@@ -910,6 +922,7 @@ class DocTamperDataset(Dataset):
             result = {
                 'image': self.toctsr(im),
                 'label': mask.float(),
+                'no_bg': False
             }
             if self.use_dct_quant:
                 if dct is not None:
